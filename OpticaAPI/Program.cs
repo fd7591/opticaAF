@@ -95,18 +95,36 @@ builder.Services.AddScoped<DevSeederService>();
 builder.Services.AddCors(options =>
 {
     options.AddPolicy("FrontendPolicy", policy =>
-        policy.WithOrigins(
-                // "http://localhost:5173",
-                // "http://localhost:3000",
-                "http://opticsystem.runasp.net",
-                "http://opticsystema.runasp.net", // por si acaso
-                builder.Configuration["AllowedOrigins"] ?? "http://localhost:5173")
+    {
+        // Hosts permitidos (sin esquema): acepta http y https automáticamente.
+        // Si el certificado SSL caduca y el frontend vuelve a HTTP, sigue funcionando.
+        var allowedHosts = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "opticsystem.runasp.net",
+            "localhost:5173",
+            "localhost:3000",
+        };
+
+        // Agregar el host de AllowedOrigins del config (si existe)
+        var configOrigin = builder.Configuration["AllowedOrigins"];
+        if (!string.IsNullOrWhiteSpace(configOrigin) &&
+            Uri.TryCreate(configOrigin, UriKind.Absolute, out var configUri))
+        {
+            allowedHosts.Add(configUri.Authority);
+        }
+
+        policy.SetIsOriginAllowed(origin =>
+                Uri.TryCreate(origin, UriKind.Absolute, out var uri) &&
+                allowedHosts.Contains(uri.Authority))
               .AllowAnyMethod()
-              .AllowAnyHeader());
+              .AllowAnyHeader();
+    });
 });
 
 var app = builder.Build();
-app.UseHttpsRedirection();
+// UseHttpsRedirection deshabilitado: monsterASP maneja SSL en el proxy (IIS).
+// Habilitarlo genera loop de redirección cuando el proxy termina el SSL internamente.
+// app.UseHttpsRedirection();
 app.UseMiddleware<GlobalExceptionMiddleware>();
 
 //if (app.Environment.IsDevelopment())
