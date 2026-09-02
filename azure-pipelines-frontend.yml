@@ -1,0 +1,96 @@
+# ============================================================
+#  Pipeline: Frontend React (Vite + Tailwind)
+#  Trigger: cambios en optica-frontend/** en la rama main
+#  Etapas: Build → Deploy (Azure Static Web Apps)
+#
+#  Variables a configurar en Azure DevOps (Settings > Pipelines > Library):
+#    - AZURE_STATIC_WEB_APP_TOKEN : token del Static Web App
+#                                   (Azure Portal → Static Web App → Manage deployment token)
+#    - AZURE_API_URL               : URL de la API desplegada
+#                                   (ej: https://optica-api-xxxx.azurewebsites.net)
+# ============================================================
+
+trigger:
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - optica-frontend/**
+      - azure-pipelines-frontend.yml
+
+pr:
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - optica-frontend/**
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+variables:
+  nodeVersion: '20.x'
+  appLocation: 'optica-frontend'
+  outputLocation: 'dist'
+
+stages:
+# ---- STAGE 1: Build ----
+- stage: Build
+  displayName: 'Build React'
+  jobs:
+  - job: BuildFrontend
+    displayName: 'Compilar frontend'
+    steps:
+
+    - task: NodeTool@0
+      displayName: 'Instalar Node $(nodeVersion)'
+      inputs:
+        versionSpec: '$(nodeVersion)'
+
+    - script: |
+        cd $(appLocation)
+        npm ci
+      displayName: 'npm ci'
+
+    - script: |
+        cd $(appLocation)
+        VITE_API_URL=$(AZURE_API_URL) npm run build
+      displayName: 'Vite build (producción)'
+
+    - task: PublishBuildArtifacts@1
+      displayName: 'Subir artefacto frontend'
+      inputs:
+        PathtoPublish: '$(appLocation)/$(outputLocation)'
+        ArtifactName: 'frontend-drop'
+        publishLocation: 'Container'
+
+# ---- STAGE 2: Deploy a Static Web Apps ----
+- stage: Deploy
+  displayName: 'Desplegar a Azure Static Web Apps'
+  dependsOn: Build
+  condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+  jobs:
+  - deployment: DeployFrontend
+    displayName: 'Deploy Static Web App'
+    environment: 'production-frontend'
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+
+          - task: DownloadBuildArtifacts@1
+            inputs:
+              buildType: 'current'
+              downloadType: 'single'
+              artifactName: 'frontend-drop'
+              downloadPath: '$(System.ArtifactsDirectory)'
+
+          - task: AzureStaticWebApp@0
+            displayName: 'Deploy → Azure Static Web Apps'
+            inputs:
+              azure_static_web_apps_api_token: '$(AZURE_STATIC_WEB_APP_TOKEN)'
+              app_location: '$(System.ArtifactsDirectory)/frontend-drop'
+              skip_app_build: true
+              output_location: ''

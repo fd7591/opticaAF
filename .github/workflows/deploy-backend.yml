@@ -1,0 +1,69 @@
+# ============================================================
+#  Workflow: Backend API (.NET 8)
+#  Trigger: cambios en OpticaAPI/** en la rama main
+#  Deploy: MSDeploy → site62458.siteasp.net (opticsystema.runasp.net)
+#
+#  Secrets requeridos en el repo (Settings > Secrets > Actions):
+#    BACKEND_DEPLOY_PASSWORD  — contraseña del perfil de publicación
+# ============================================================
+
+name: Deploy Backend
+
+on:
+  push:
+    branches: [main, dev]
+    paths:
+      - 'OpticaAPI/**'
+      - '.github/workflows/deploy-backend.yml'
+
+jobs:
+  build-and-deploy:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.x'
+
+      - name: Restore NuGet
+        run: dotnet restore OpticaAPI/OpticaAPI.csproj
+
+      - name: Publish
+        run: dotnet publish OpticaAPI/OpticaAPI.csproj -c Release -o ./publish --no-restore
+
+      - name: Deploy via MSDeploy
+        shell: powershell
+        run: |
+          $msdeploy = Get-ChildItem "C:\Program Files*\IIS\Microsoft Web Deploy*\msdeploy.exe" |
+                      Select-Object -First 1 -ExpandProperty FullName
+          if (-not $msdeploy) { Write-Error "msdeploy.exe no encontrado"; exit 1 }
+          Write-Host "Usando: $msdeploy"
+          & $msdeploy `
+            -verb:sync `
+            -source:contentPath="${{ github.workspace }}\publish" `
+            -dest:contentPath="site62458",computerName="https://site62458.siteasp.net/msdeploy.axd?site=site62458",userName="site62458",password="${{ secrets.BACKEND_DEPLOY_PASSWORD }}",authtype="Basic" `
+            -allowUntrusted `
+            -enableRule:AppOffline
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Health check
+        shell: bash
+        run: |
+          echo "Verificando API..."
+          for i in 1 2 3 4 5; do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+              -X POST "http://opticsystema.runasp.net/api/auth/login" \
+              -H "Content-Type: application/json" \
+              -d '{"nombreUsuario":"__check__","password":"__check__"}')
+            echo "Intento $i → HTTP $STATUS"
+            if [ "$STATUS" = "401" ] || [ "$STATUS" = "200" ]; then
+              echo "API responde correctamente."
+              exit 0
+            fi
+            sleep 15
+          done
+          echo "Advertencia: la API no respondió en tiempo esperado."

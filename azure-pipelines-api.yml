@@ -1,0 +1,122 @@
+# ============================================================
+#  Pipeline: API Backend (.NET 8)
+#  Trigger: cambios en OpticaAPI/** en la rama main
+#  Etapas: Build → Deploy (App Service F1)
+#
+#  Variables a configurar en Azure DevOps (Settings > Pipelines > Library):
+#    - AZURE_SERVICE_CONNECTION  : nombre de la service connection a tu suscripción
+#    - AZURE_API_APP_NAME        : nombre del App Service (output del bicep)
+#    - SQL_ADMIN_PASSWORD        : contraseña SQL (secreto)
+#    - JWT_KEY                   : clave JWT (secreto)
+# ============================================================
+
+trigger:
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - OpticaAPI/**
+      - azure-pipelines-api.yml
+
+pr:
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - OpticaAPI/**
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+variables:
+  buildConfiguration: 'Release'
+  projectPath: 'OpticaAPI/OpticaAPI.csproj'
+  dotnetVersion: '8.x'
+
+# ---- STAGE 1: Build & Test ----
+stages:
+- stage: Build
+  displayName: 'Build y publicar API'
+  jobs:
+  - job: BuildJob
+    displayName: 'Compilar .NET 8'
+    steps:
+
+    - task: UseDotNet@2
+      displayName: 'Instalar .NET $(dotnetVersion)'
+      inputs:
+        packageType: 'sdk'
+        version: '$(dotnetVersion)'
+
+    - task: DotNetCoreCLI@2
+      displayName: 'Restaurar paquetes NuGet'
+      inputs:
+        command: 'restore'
+        projects: '$(projectPath)'
+
+    - task: DotNetCoreCLI@2
+      displayName: 'Compilar'
+      inputs:
+        command: 'build'
+        projects: '$(projectPath)'
+        arguments: '--configuration $(buildConfiguration) --no-restore'
+
+    - task: DotNetCoreCLI@2
+      displayName: 'Publicar'
+      inputs:
+        command: 'publish'
+        projects: '$(projectPath)'
+        arguments: '--configuration $(buildConfiguration) --no-build --output $(Build.ArtifactStagingDirectory)/api'
+        zipAfterPublish: true
+        modifyOutputPath: false
+
+    - task: PublishBuildArtifacts@1
+      displayName: 'Subir artefacto api'
+      inputs:
+        PathtoPublish: '$(Build.ArtifactStagingDirectory)/api'
+        ArtifactName: 'api-drop'
+        publishLocation: 'Container'
+
+# ---- STAGE 2: Deploy a App Service ----
+- stage: Deploy
+  displayName: 'Desplegar a Azure App Service'
+  dependsOn: Build
+  condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+  jobs:
+  - deployment: DeployAPI
+    displayName: 'Deploy App Service'
+    environment: 'production-api'
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+
+          - task: AzureWebApp@1
+            displayName: 'Deploy .NET API → App Service'
+            inputs:
+              azureSubscription: '$(AZURE_SERVICE_CONNECTION)'
+              appType: 'webApp'
+              appName: '$(AZURE_API_APP_NAME)'
+              package: '$(Pipeline.Workspace)/api-drop/*.zip'
+              deploymentMethod: 'zipDeploy'
+
+          # Verificación post-deploy: el endpoint /api/auth/login debe responder
+          - script: |
+              echo "Verificando API..."
+              for i in 1 2 3 4 5; do
+                STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+                  -X POST "https://$(AZURE_API_APP_NAME).azurewebsites.net/api/auth/login" \
+                  -H "Content-Type: application/json" \
+                  -d '{"nombreUsuario":"__check__","password":"__check__"}')
+                echo "Intento $i → HTTP $STATUS"
+                if [ "$STATUS" = "401" ] || [ "$STATUS" = "200" ]; then
+                  echo "API responde correctamente."
+                  exit 0
+                fi
+                sleep 10
+              done
+              echo "La API no respondió en tiempo esperado."
+              exit 1
+            displayName: 'Health check API'

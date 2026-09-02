@@ -1,0 +1,56 @@
+# ============================================================
+#  Workflow: Frontend React (Vite)
+#  Trigger: cambios en optica-frontend/** en la rama main
+#  Deploy: MSDeploy → site62457.siteasp.net (opticsystem.runasp.net)
+#
+#  Secrets requeridos en el repo (Settings > Secrets > Actions):
+#    FRONTEND_DEPLOY_PASSWORD — contraseña del perfil de publicación
+# ============================================================
+
+name: Deploy Frontend
+
+on:
+  push:
+    branches: [main, dev]
+    paths:
+      - 'optica-frontend/**'
+      - '.github/workflows/deploy-frontend.yml'
+
+jobs:
+  build-and-deploy:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20.x'
+          cache: 'npm'
+          cache-dependency-path: optica-frontend/package-lock.json
+
+      - name: Install dependencies
+        working-directory: optica-frontend
+        run: npm ci
+
+      - name: Build (producción)
+        working-directory: optica-frontend
+        env:
+          VITE_API_URL: http://opticsystema.runasp.net
+        run: npm run build
+
+      - name: Deploy via MSDeploy
+        shell: powershell
+        run: |
+          $msdeploy = Get-ChildItem "C:\Program Files*\IIS\Microsoft Web Deploy*\msdeploy.exe" |
+                      Select-Object -First 1 -ExpandProperty FullName
+          if (-not $msdeploy) { Write-Error "msdeploy.exe no encontrado"; exit 1 }
+          Write-Host "Usando: $msdeploy"
+          & $msdeploy `
+            -verb:sync `
+            -source:contentPath="${{ github.workspace }}\optica-frontend\dist" `
+            -dest:contentPath="site62457",computerName="https://site62457.siteasp.net/msdeploy.axd?site=site62457",userName="site62457",password="${{ secrets.FRONTEND_DEPLOY_PASSWORD }}",authtype="Basic" `
+            -allowUntrusted
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

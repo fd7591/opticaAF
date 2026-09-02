@@ -1,0 +1,158 @@
+# ============================================================
+#  Pipeline: Infraestructura (Bicep)
+#  Trigger: MANUAL o cambios en infra/**
+#  Etapas: Validate → What-if → Deploy
+#
+#  Variables a configurar en Azure DevOps (Library):
+#    - AZURE_SERVICE_CONNECTION : service connection a tu suscripción
+#    - AZURE_RESOURCE_GROUP     : nombre del resource group (ej: rg-optica-prod)
+#    - SQL_ADMIN_PASSWORD       : contraseña SQL (secreto)
+#    - JWT_KEY                  : clave JWT (secreto, mín. 32 chars)
+# ============================================================
+
+trigger:
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - infra/**
+
+pr: none   # No desplegar infra automáticamente en PRs
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+variables:
+  resourceGroup: '$(AZURE_RESOURCE_GROUP)'
+  bicepFile: 'infra/main.bicep'
+  location: 'eastus'
+
+stages:
+# ---- STAGE 1: Validar template Bicep ----
+- stage: Validate
+  displayName: 'Validar Bicep'
+  jobs:
+  - job: ValidateBicep
+    steps:
+
+    - task: AzureCLI@2
+      displayName: 'az bicep build (lint)'
+      inputs:
+        azureSubscription: '$(AZURE_SERVICE_CONNECTION)'
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          az bicep build --file $(bicepFile)
+          echo "Bicep lint: OK"
+
+    - task: AzureCLI@2
+      displayName: 'Validar deployment'
+      inputs:
+        azureSubscription: '$(AZURE_SERVICE_CONNECTION)'
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          az deployment group validate \
+            --resource-group $(resourceGroup) \
+            --template-file $(bicepFile) \
+            --parameters \
+                projectName=optica \
+                location=$(location) \
+                sqlAdminUser=opticaadmin \
+                sqlAdminPassword='$(SQL_ADMIN_PASSWORD)' \
+                jwtKey='$(JWT_KEY)' \
+                environment=Production
+
+# ---- STAGE 2: What-if (preview de cambios) ----
+- stage: WhatIf
+  displayName: 'What-if (preview)'
+  dependsOn: Validate
+  condition: succeeded()
+  jobs:
+  - job: WhatIfJob
+    steps:
+
+    - task: AzureCLI@2
+      displayName: 'az deployment what-if'
+      inputs:
+        azureSubscription: '$(AZURE_SERVICE_CONNECTION)'
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          az deployment group what-if \
+            --resource-group $(resourceGroup) \
+            --template-file $(bicepFile) \
+            --parameters \
+                projectName=optica \
+                location=$(location) \
+                sqlAdminUser=opticaadmin \
+                sqlAdminPassword='$(SQL_ADMIN_PASSWORD)' \
+                jwtKey='$(JWT_KEY)' \
+                environment=Production \
+            --result-format FullResourcePayloads
+
+# ---- STAGE 3: Deploy (solo en main, con approval gate) ----
+- stage: Deploy
+  displayName: 'Desplegar infraestructura'
+  dependsOn: WhatIf
+  condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+  jobs:
+  - deployment: DeployInfra
+    displayName: 'Crear/actualizar recursos Azure'
+    environment: 'production-infra'   # Configurar approval gate aquí en Azure DevOps
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+
+          # Crear resource group si no existe
+          - task: AzureCLI@2
+            displayName: 'Crear Resource Group'
+            inputs:
+              azureSubscription: '$(AZURE_SERVICE_CONNECTION)'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                az group create \
+                  --name $(resourceGroup) \
+                  --location $(location) \
+                  --tags project=optica managedBy=bicep
+
+          # Desplegar Bicep
+          - task: AzureCLI@2
+            displayName: 'az deployment group create'
+            inputs:
+              azureSubscription: '$(AZURE_SERVICE_CONNECTION)'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                RESULT=$(az deployment group create \
+                  --resource-group $(resourceGroup) \
+                  --template-file infra/main.bicep \
+                  --parameters \
+                      projectName=optica \
+                      location=$(location) \
+                      sqlAdminUser=opticaadmin \
+                      sqlAdminPassword='$(SQL_ADMIN_PASSWORD)' \
+                      jwtKey='$(JWT_KEY)' \
+                      environment=Production \
+                  --output json)
+
+                echo "$RESULT"
+
+                # Capturar outputs y guardar como variables de pipeline
+                API_URL=$(echo $RESULT | jq -r '.properties.outputs.apiUrl.value')
+                SWA_URL=$(echo $RESULT | jq -r '.properties.outputs.staticWebAppUrl.value')
+                API_APP_NAME=$(echo $RESULT | jq -r '.properties.outputs.apiAppName.value')
+                SWA_NAME=$(echo $RESULT | jq -r '.properties.outputs.staticWebAppName.value')
+
+                echo "##vso[task.setvariable variable=API_URL;isOutput=true]$API_URL"
+                echo "##vso[task.setvariable variable=SWA_URL;isOutput=true]$SWA_URL"
+
+                echo ""
+                echo "=== OUTPUTS ==="
+                echo "API URL:            $API_URL"
+                echo "Frontend URL:       $SWA_URL"
+                echo "App Service Name:   $API_APP_NAME"
+                echo "Static Web App:     $SWA_NAME"
