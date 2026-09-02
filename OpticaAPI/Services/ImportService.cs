@@ -476,8 +476,8 @@ public class ImportService
         text = text.Trim();
         if (string.IsNullOrEmpty(text)) return (null, null, null, null);
 
-        // esfera=cilindroxeje  e.g. -0.25=-1.50X170
-        var full = Regex.Match(text, @"^([+-]?\d+(?:\.\d+)?)=([+-]?\d+(?:\.\d+)?)X(\d+)",
+        // esfera=cilindroxeje  e.g. -0.25=-1.50X170  o  -0.25=-1.50X 170 (con espacio)
+        var full = Regex.Match(text, @"^([+-]?\d+(?:\.\d+)?)=([+-]?\d+(?:\.\d+)?)X\s*(\d+)",
             RegexOptions.IgnoreCase, TimeSpan.FromSeconds(1));
         if (full.Success)
             return (
@@ -486,8 +486,8 @@ public class ImportService
                 int.Parse(full.Groups[3].Value),
                 null);
 
-        // esferaXeje  e.g. -1.75X180
-        var esferaEje = Regex.Match(text, @"^([+-]?\d+(?:\.\d+)?)X(\d+)",
+        // esferaXeje  e.g. -1.75X180  o  -1.75X 180 (con espacio)
+        var esferaEje = Regex.Match(text, @"^([+-]?\d+(?:\.\d+)?)X\s*(\d+)",
             RegexOptions.IgnoreCase, TimeSpan.FromSeconds(1));
         if (esferaEje.Success)
             return (

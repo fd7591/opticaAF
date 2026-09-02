@@ -36,7 +36,9 @@ public class PacienteService
             var s = search.ToLower();
             query = query.Where(p =>
                 p.Nombre.ToLower().Contains(s) ||
-                p.Apellido.ToLower().Contains(s));
+                p.Apellido.ToLower().Contains(s) ||
+                (p.Nombre + " " + p.Apellido).ToLower().Contains(s) ||
+                (p.Apellido + " " + p.Nombre).ToLower().Contains(s));
         }
 
         var total = await query.CountAsync();
