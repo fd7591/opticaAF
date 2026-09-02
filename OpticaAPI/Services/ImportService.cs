@@ -422,99 +422,116 @@ public class ImportService
     private static decimal? ClampAdicion(decimal? v) =>
         v.HasValue ? Math.Clamp(v.Value, -99.99m, 99.99m) : null;
 
+    // ─── Regexes de prescripción ──────────────────────────────────────────
+    // Patrón completo: OD … OI … (ADD/ASS opcional)
+    // Flags: IgnoreCase + IgnorePatternWhitespace (verbose, como (?ix) en Python)
+    private static readonly Regex _prescFull = new Regex(
+        @"OD\s*[:\.\-]?\s*
+          (?:
+              (?<od_sph>NEUTRO|[+-]\s?\d{1,2}[.,]\d{2})\s*=\s*(?<od_cyl>-{1,2}\s?\d{1,2}[.,]\d{2})\s*[Xx]\s*(?<od_axis>\d{1,3})°?
+            | (?<od_cylonly>[+-]\s?\d{1,2}[.,]\d{2})\s*[Xx]\s*(?<od_axisonly>\d{1,3})°?
+            | (?<od_sphonly>NEUTRO|[+-]\s?\d{1,2}[.,]\d{2})
+          )
+          .{0,30}?
+          OI\s*[:\.\-]?\s*
+          (?:
+              (?<oi_sph>NEUTRO|[+-]\s?\d{1,2}[.,]\d{2})\s*=\s*(?<oi_cyl>-{1,2}\s?\d{1,2}[.,]\d{2})\s*[Xx]\s*(?<oi_axis>\d{1,3})°?
+            | (?<oi_cylonly>[+-]\s?\d{1,2}[.,]\d{2})\s*[Xx]\s*(?<oi_axisonly>\d{1,3})°?
+            | (?<oi_sphonly>NEUTRO|[+-]\s?\d{1,2}[.,]\d{2})
+          )
+          (?:.{0,15}?(?:ADD|ASS)\s*(?<add>[+-]?\d{1,2}[.,]\d{2}))?",
+        RegexOptions.IgnoreCase | RegexOptions.IgnorePatternWhitespace,
+        TimeSpan.FromSeconds(2));
+
+    // Patrón solo OD (sin OI en el texto)
+    private static readonly Regex _prescOdOnly = new Regex(
+        @"OD\s*[:\.\-]?\s*
+          (?:
+              (?<od_sph>NEUTRO|[+-]\s?\d{1,2}[.,]\d{2})\s*=\s*(?<od_cyl>-{1,2}\s?\d{1,2}[.,]\d{2})\s*[Xx]\s*(?<od_axis>\d{1,3})°?
+            | (?<od_cylonly>[+-]\s?\d{1,2}[.,]\d{2})\s*[Xx]\s*(?<od_axisonly>\d{1,3})°?
+            | (?<od_sphonly>NEUTRO|[+-]\s?\d{1,2}[.,]\d{2})
+          )
+          (?:.{0,20}?(?:ADD|ASS)\s*(?<add>[+-]?\d{1,2}[.,]\d{2}))?",
+        RegexOptions.IgnoreCase | RegexOptions.IgnorePatternWhitespace,
+        TimeSpan.FromSeconds(2));
+
     private static ParsedPrescripcion ParsePrescripcion(string texto)
     {
         if (string.IsNullOrWhiteSpace(texto))
             return new ParsedPrescripcion();
 
-        var upper = texto.ToUpperInvariant();
-
-        // ADD
-        decimal? adicion = null;
-        var addMatch = Regex.Match(upper, @"ADD\s*([+-]?\d+(?:\.\d+)?)", RegexOptions.None, TimeSpan.FromSeconds(1));
-        if (addMatch.Success)
-            adicion = decimal.Parse(addMatch.Groups[1].Value, CultureInfo.InvariantCulture);
-        int addIdx = addMatch.Success ? upper.IndexOf(addMatch.Value, StringComparison.Ordinal) : -1;
-
-        int odIdx = upper.IndexOf("OD", StringComparison.Ordinal);
-        int oiIdx = upper.IndexOf("OI", StringComparison.Ordinal);
-
-        string odStr = string.Empty;
-        string oiStr = string.Empty;
-
-        if (odIdx >= 0 && oiIdx >= 0 && odIdx < oiIdx)
+        var m = _prescFull.Match(texto);
+        if (!m.Success)
         {
-            odStr = upper.Substring(odIdx + 2, oiIdx - odIdx - 2).Trim();
-            int oiEnd = addIdx > oiIdx ? addIdx : upper.Length;
-            oiStr = upper.Substring(oiIdx + 2, oiEnd - oiIdx - 2).Trim();
-        }
-        else if (odIdx >= 0)
-        {
-            int odEnd = addIdx >= 0 ? addIdx : upper.Length;
-            odStr = upper.Substring(odIdx + 2, odEnd - odIdx - 2).Trim();
-        }
-        else if (oiIdx >= 0)
-        {
-            int oiEnd = addIdx >= 0 ? addIdx : upper.Length;
-            oiStr = upper.Substring(oiIdx + 2, oiEnd - oiIdx - 2).Trim();
+            // Fallback: solo OD (OI ausente en el texto)
+            var od = _prescOdOnly.Match(texto);
+            if (!od.Success)
+                return new ParsedPrescripcion { Observaciones = texto };
+
+            var (odSph2, odCyl2, odAxis2) = ExtractOjo(od, "od");
+            decimal? add2 = od.Groups["add"].Success ? ParseOptD(od.Groups["add"].Value) : null;
+            return new ParsedPrescripcion
+            {
+                OD_Esfera = odSph2, OD_Cilindro = odCyl2, OD_Eje = odAxis2,
+                Adicion = add2
+            };
         }
 
-        var (odEsf, odCil, odEje, odObs) = ParseOjoStr(odStr);
-        var (oiEsf, oiCil, oiEje, oiObs) = ParseOjoStr(oiStr);
-        var obs = odObs ?? oiObs;
+        var (odSph, odCyl, odAxis) = ExtractOjo(m, "od");
+        var (oiSph, oiCyl, oiAxis) = ExtractOjo(m, "oi");
+        decimal? add = m.Groups["add"].Success ? ParseOptD(m.Groups["add"].Value) : null;
 
         return new ParsedPrescripcion
         {
-            OD_Esfera = odEsf, OD_Cilindro = odCil, OD_Eje = odEje,
-            OI_Esfera = oiEsf, OI_Cilindro = oiCil, OI_Eje = oiEje,
-            Adicion = adicion, Observaciones = obs
+            OD_Esfera   = odSph,  OD_Cilindro = odCyl,  OD_Eje = odAxis,
+            OI_Esfera   = oiSph,  OI_Cilindro = oiCyl,  OI_Eje = oiAxis,
+            Adicion     = add
         };
     }
 
-    private static (decimal? esfera, decimal? cilindro, int? eje, string? obs) ParseOjoStr(string text)
+    private static (decimal? sph, decimal? cyl, int? axis) ExtractOjo(Match m, string prefix)
     {
-        text = text.Trim();
-        if (string.IsNullOrEmpty(text)) return (null, null, null, null);
-
-        // esfera=cilindroxeje  e.g. -0.25=-1.50X170  o  -0.25=-1.50X 170 (con espacio)
-        var full = Regex.Match(text, @"^([+-]?\d+(?:\.\d+)?)=([+-]?\d+(?:\.\d+)?)X\s*(\d+)",
-            RegexOptions.IgnoreCase, TimeSpan.FromSeconds(1));
-        if (full.Success)
+        if (m.Groups[$"{prefix}_sph"].Success)
             return (
-                decimal.Parse(full.Groups[1].Value, CultureInfo.InvariantCulture),
-                decimal.Parse(full.Groups[2].Value, CultureInfo.InvariantCulture),
-                int.Parse(full.Groups[3].Value),
-                null);
-
-        // esferaXeje  e.g. -1.75X180  o  -1.75X 180 (con espacio)
-        var esferaEje = Regex.Match(text, @"^([+-]?\d+(?:\.\d+)?)X\s*(\d+)",
-            RegexOptions.IgnoreCase, TimeSpan.FromSeconds(1));
-        if (esferaEje.Success)
+                ParseOptD(m.Groups[$"{prefix}_sph"].Value),
+                ParseOptD(m.Groups[$"{prefix}_cyl"].Value),
+                ParseOptI(m.Groups[$"{prefix}_axis"].Value));
+        if (m.Groups[$"{prefix}_cylonly"].Success)
             return (
-                decimal.Parse(esferaEje.Groups[1].Value, CultureInfo.InvariantCulture),
                 null,
-                int.Parse(esferaEje.Groups[2].Value),
-                null);
+                ParseOptD(m.Groups[$"{prefix}_cylonly"].Value),
+                ParseOptI(m.Groups[$"{prefix}_axisonly"].Value));
+        if (m.Groups[$"{prefix}_sphonly"].Success)
+            return (ParseOptD(m.Groups[$"{prefix}_sphonly"].Value), null, null);
+        return (null, null, null);
+    }
 
-        // solo esfera  e.g. -0.25
-        var esfera = Regex.Match(text, @"^([+-]?\d+(?:\.\d+)?)$",
-            RegexOptions.None, TimeSpan.FromSeconds(1));
-        if (esfera.Success)
-            return (decimal.Parse(esfera.Groups[1].Value, CultureInfo.InvariantCulture), null, null, null);
+    // Parsea un decimal óptico: acepta coma o punto, espacios, doble signo y "NEUTRO"→0
+    private static decimal? ParseOptD(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return null;
+        if (value.Trim().Equals("NEUTRO", StringComparison.OrdinalIgnoreCase)) return 0m;
+        var s = value.Replace(" ", "").Replace(",", ".");
+        if (s.StartsWith("--")) s = s[1..]; // --6.00 → -6.00
+        return decimal.TryParse(s, NumberStyles.Any, CultureInfo.InvariantCulture, out var d) ? d : null;
+    }
 
-        // texto libre  e.g. "LENTE BLANDO TORICO"
-        return (null, null, null, text);
+    // Parsea el eje (entero, descarta el símbolo °)
+    private static int? ParseOptI(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return null;
+        return int.TryParse(value.TrimEnd('°').Trim(), out var i) ? i : null;
     }
 
     private record ParsedPrescripcion
     {
-        public decimal? OD_Esfera { get; init; }
+        public decimal? OD_Esfera   { get; init; }
         public decimal? OD_Cilindro { get; init; }
-        public int? OD_Eje { get; init; }
-        public decimal? OI_Esfera { get; init; }
+        public int?     OD_Eje      { get; init; }
+        public decimal? OI_Esfera   { get; init; }
         public decimal? OI_Cilindro { get; init; }
-        public int? OI_Eje { get; init; }
-        public decimal? Adicion { get; init; }
-        public string? Observaciones { get; init; }
+        public int?     OI_Eje      { get; init; }
+        public decimal? Adicion     { get; init; }
+        public string?  Observaciones { get; init; }
     }
 }
