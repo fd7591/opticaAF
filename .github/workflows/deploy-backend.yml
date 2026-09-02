@@ -12,9 +12,6 @@ name: Deploy Backend
 on:
   push:
     branches: [main, dev]
-    paths:
-      - 'OpticaAPI/**'
-      - '.github/workflows/deploy-backend.yml'
 
 jobs:
   build-and-deploy:
