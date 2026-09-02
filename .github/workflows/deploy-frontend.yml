@@ -48,6 +48,6 @@ jobs:
           & $msdeploy `
             -verb:sync `
             -source:contentPath="${{ github.workspace }}\optica-frontend\dist" `
-            -dest:contentPath="site62457",computerName="https://site62457.siteasp.net/msdeploy.axd?site=site62457",userName="site62457",password="${{ secrets.FRONTEND_DEPLOY_PASSWORD }}",authtype="Basic" `
+            -dest:contentPath="site62457",computerName="https://site62457.siteasp.net:8172/msdeploy.axd?site=site62457",userName="site62457",password="${{ secrets.FRONTEND_DEPLOY_PASSWORD }}",authtype="Basic" `
             -allowUntrusted
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

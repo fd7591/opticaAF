@@ -42,7 +42,7 @@ jobs:
           & $msdeploy `
             -verb:sync `
             -source:contentPath="${{ github.workspace }}\publish" `
-            -dest:contentPath="site62458",computerName="https://site62458.siteasp.net/msdeploy.axd?site=site62458",userName="site62458",password="${{ secrets.BACKEND_DEPLOY_PASSWORD }}",authtype="Basic" `
+            -dest:contentPath="site62458",computerName="https://site62458.siteasp.net:8172/msdeploy.axd?site=site62458",userName="site62458",password="${{ secrets.BACKEND_DEPLOY_PASSWORD }}",authtype="Basic" `
             -allowUntrusted `
             -enableRule:AppOffline
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
