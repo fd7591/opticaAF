@@ -35,7 +35,7 @@ jobs:
       - name: Build (producción)
         working-directory: optica-frontend
         env:
-          VITE_API_URL: http://opticsystema.runasp.net
+          VITE_API_URL: https://opticsystema.runasp.net
         run: npm run build
 
       - name: Deploy via MSDeploy
